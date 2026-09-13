@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Symphony
+GenericName=Music Player
+Comment=Classic Winamp-style music player
+Exec=symphony
+Icon=symphony
+Terminal=false
+Type=Application
+Categories=AudioVideo;Audio;Player;
+StartupNotify=true
