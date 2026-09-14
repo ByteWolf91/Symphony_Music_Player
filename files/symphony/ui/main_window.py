@@ -160,6 +160,9 @@ class MainWindow(QWidget):
                 button.setIcon(QIcon())
                 button.setText(fallback)
         self.playlist_window.set_skin(self.skin)
+        has_skin = bool(self.skin.loaded)
+        self.btn_seek_back.setVisible(not has_skin)
+        self.btn_seek_fwd.setVisible(not has_skin)
 
     # ---------------- UI construction ----------------
     def _build_ui(self):
@@ -253,7 +256,7 @@ class MainWindow(QWidget):
         vb_row.setSpacing(8)
         self.vol_slider = WheelSlider(Qt.Horizontal)
         self.vol_slider.setRange(0, 100)
-        self.vol_slider.setMinimumHeight(20)
+        self.vol_slider.setMinimumHeight(16)
         self.vol_slider.setMinimumWidth(180)
         self.vol_slider.setToolTip("Volume: 80%  (scroll to adjust)")
         self.vol_slider.setStyleSheet(theme_mod.volume_slider_qss(self._theme))

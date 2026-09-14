@@ -257,27 +257,27 @@ def volume_slider_qss(theme_name: str) -> str:
     QSlider::groove:horizontal {{
         background: {p['panel']};
         border: 1px solid {p['border']};
-        height: 8px;
-        border-radius: 4px;
+        height: 6px;
+        border-radius: 3px;
     }}
     QSlider::sub-page:horizontal {{
         background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
                      stop:0 {p['accent_dim']}, stop:1 {p['accent']});
         border: 1px solid {p['border']};
-        border-radius: 4px;
+        border-radius: 3px;
     }}
     QSlider::add-page:horizontal {{
         background: {p['panel']};
         border: 1px solid {p['border']};
-        border-radius: 4px;
+        border-radius: 3px;
     }}
     QSlider::handle:horizontal {{
         background: qradialgradient(cx:0.5, cy:0.4, radius:0.6,
                      fx:0.5, fy:0.3, stop:0 #ffffff, stop:0.35 {p['accent']}, stop:1 {p['accent_dim']});
-        width: 16px;
-        height: 16px;
-        margin: -5px 0;
-        border-radius: 8px;
+        width: 14px;
+        height: 14px;
+        margin: -4px 0;
+        border-radius: 7px;
         border: 1px solid {p['border']};
     }}
     QSlider::handle:horizontal:hover {{
@@ -287,17 +287,14 @@ def volume_slider_qss(theme_name: str) -> str:
 
 
 def volume_value_label_qss(theme_name: str) -> str:
-    """A small readable 'chip' for the live volume percentage, so it stays
-    legible with real contrast regardless of the app theme or loaded skin,
-    instead of a plain unstyled number."""
+    """A small, theme-colored label for the live volume percentage that blends
+    into the background (no panel box) so it reads cleanly alongside the
+    skinned/unskinned volume slider."""
     p = palette(theme_name)
     return f"""
     QLabel {{
-        background: {p['panel']};
         color: {p['accent']};
-        border: 1px solid {p['border']};
-        border-radius: 8px;
-        padding: 1px 8px;
+        padding: 0 6px;
         font-size: 10px;
         font-weight: bold;
     }}
