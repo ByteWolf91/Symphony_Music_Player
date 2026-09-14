@@ -63,6 +63,8 @@ class PlaylistWindow(QWidget):
         self.list_widget.setStyleSheet(
             "background:#10141c; color:#f4f7fb; border:1px solid #465166;")
         self.list_widget.itemDoubleClicked.connect(self._on_item_double_clicked)
+        self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
         # Enter plays the selected row; Up/Down/PageUp/PageDown navigation
         # is QListWidget's native behavior already.
         self.list_widget.keyPressEvent = self._list_key_press
@@ -242,3 +244,33 @@ class PlaylistWindow(QWidget):
     def _do_drag(self, event):
         if self._drag_pos is not None:
             self.move(event.globalPos() - self._drag_pos)
+
+
+    def contextMenuEvent(self, event):
+        menu = QMenu(self)
+        act_add_file = menu.addAction('Add File(s)...')
+        act_add_folder = menu.addAction('Add Folder...')
+        menu.addSeparator()
+        act_remove = menu.addAction('Remove Selected Track')
+        act_clear = menu.addAction('Clear Playlist')
+        action = menu.exec_(event.globalPos())
+        if action == act_add_file:
+            if hasattr(self, 'on_add_file'): self.on_add_file()
+            elif hasattr(self, 'add_files_dialog'): self.add_files_dialog()
+        elif action == act_add_folder:
+            if hasattr(self, 'on_add_directory'): self.on_add_directory()
+            elif hasattr(self, 'add_folder_dialog'): self.add_folder_dialog()
+        elif action == act_remove:
+            if hasattr(self, 'remove_selected'): self.remove_selected()
+        elif action == act_clear:
+            if hasattr(self, 'clear_playlist'): self.clear_playlist()
+
+    def _show_context_menu(self, pos):
+        menu = QMenu(self)
+        menu.addAction("Add File(s)…", self.add_files_requested.emit)
+        menu.addAction("Add Folder…", self.add_folder_requested.emit)
+        menu.addSeparator()
+        if self.list_widget.currentRow() >= 0:
+            menu.addAction("Remove Selected Track", lambda: self.remove_index_requested.emit(self.list_widget.currentRow()))
+        menu.addAction("Clear Playlist", self.clear_requested.emit)
+        menu.exec_(self.list_widget.viewport().mapToGlobal(pos))

@@ -105,7 +105,7 @@ class Visualizer(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#000000"))
+        painter.fillRect(self.rect(), QColor("#14161f"))
         skin = self._skin_provider()
         palette = skin.visualizer_palette() if (skin and skin.loaded) else None
 
@@ -123,9 +123,9 @@ class Visualizer(QWidget):
                 painter.fillRect(x, 16 - h, bar_w, h, color)
             else:
                 grad = QLinearGradient(0, 16 - h, 0, 16)
-                grad.setColorAt(0.0, QColor("#ff5050"))
-                grad.setColorAt(0.4, QColor("#eaff50"))
-                grad.setColorAt(1.0, QColor("#5fff5f"))
+                grad.setColorAt(0.0, QColor("#818cf8"))
+                grad.setColorAt(0.6, QColor("#6366f1"))
+                grad.setColorAt(1.0, QColor("#4f46e5"))
                 painter.fillRect(x, 16 - h, bar_w, h, grad)
         painter.end()
 

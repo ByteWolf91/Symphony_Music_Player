@@ -73,6 +73,7 @@ class PlayerEngine(QObject):
     def play(self):
         self._player.play()
         self.state_changed.emit("playing")
+        QTimer.singleShot(200, self._apply_equalizer)
 
     def pause(self):
         self._player.set_pause(1)
@@ -125,6 +126,7 @@ class PlayerEngine(QObject):
     def set_preamp(self, db: float):
         self._eq_preamp = max(-20.0, min(20.0, float(db)))
         self._equalizer.set_preamp(self._eq_preamp)
+        print(f"[EQ] Preamp -> {self._eq_preamp:+.1f} dB (Active: {self._eq_enabled})")
         self._apply_equalizer()
 
     def set_band(self, index: int, db: float):
@@ -133,12 +135,34 @@ class PlayerEngine(QObject):
             self._equalizer.set_amp_at_index(float(db), index)
             self._apply_equalizer()
 
+    def _apply_classic_curve(self):
+        freqs = self.band_frequencies
+        if not freqs:
+            return
+        classic = self._classic_frequencies
+        values = self._eq_bands
+        for i, f in enumerate(freqs):
+            if f <= classic[0]:
+                db = values[0]
+            elif f >= classic[-1]:
+                db = values[-1]
+            else:
+                j = 0
+                while j < len(classic) - 2 and classic[j + 1] < f:
+                    j += 1
+                f0, f1 = classic[j], classic[j + 1]
+                v0, v1 = values[j], values[j + 1]
+                t = (f - f0) / (f1 - f0) if f1 > f0 else 0.0
+                db = v0 + (v1 - v0) * t
+            self._equalizer.set_amp_at_index(float(db), i)
+
     def set_classic_band(self, index: int, db: float):
-        """Set one of the ten Winamp bands, mapped to this LibVLC build."""
+        """Set one of the ten Winamp bands and smoothly interpolate across actual bands."""
         if 0 <= index < len(self._eq_bands):
             self._eq_bands[index] = max(-20.0, min(20.0, float(db)))
-            actual_index = self._classic_band_map[index]
-            self.set_band(actual_index, self._eq_bands[index])
+            self._apply_classic_curve()
+            print(f"[EQ] Band {index} ({self._classic_frequencies[index]:.0f}Hz) -> {self._eq_bands[index]:+.1f} dB | Active: {self._eq_enabled} | Playing: {self.is_playing()}")
+            self._apply_equalizer()
 
     def get_classic_band_values(self):
         return list(self._eq_bands)
@@ -148,15 +172,15 @@ class PlayerEngine(QObject):
 
     def set_eq_enabled(self, enabled: bool):
         self._eq_enabled = bool(enabled)
+        print(f"[EQ] Equalizer {'ENABLED' if self._eq_enabled else 'DISABLED'} (Playing: {self.is_playing()})")
         self._apply_equalizer()
 
     def apply_preset_db(self, values_10_band, preamp_db=0.0):
-        """Apply classic Winamp values to the nearest LibVLC frequencies."""
         self.set_preamp(preamp_db)
         for i, value in enumerate(values_10_band[:len(self._eq_bands)]):
             self._eq_bands[i] = max(-20.0, min(20.0, float(value)))
-            self._equalizer.set_amp_at_index(
-                self._eq_bands[i], self._classic_band_map[i])
+        self._apply_classic_curve()
+        print(f"[EQ] Preset applied: preamp={preamp_db:+.1f}dB, bands={[round(x,1) for x in self._eq_bands]}")
         self._apply_equalizer()
 
     def _build_classic_band_map(self):
@@ -174,9 +198,6 @@ class PlayerEngine(QObject):
         ]
 
     def _apply_equalizer(self):
-        # Passing None to set_equalizer disables it entirely.  Reusing one
-        # equalizer object is important: creating a new object per slider tick
-        # makes some python-vlc versions silently ignore later changes.
         self._player.set_equalizer(self._equalizer if self._eq_enabled else None)
 
     # ---------- internal ----------

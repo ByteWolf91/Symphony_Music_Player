@@ -1,8 +1,9 @@
 import os
 
 from PyQt5.QtCore import Qt, QTimer, QSize
-from PyQt5.QtGui import QKeySequence, QPainter, QIcon
+from PyQt5.QtGui import QKeySequence, QPainter, QIcon, QColor
 from PyQt5.QtWidgets import (
+    QSizePolicy,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFileDialog, QMenu, QShortcut, QMessageBox, QDialog, QSplitter,
     QApplication, QStyle
@@ -96,75 +97,73 @@ class MainWindow(QWidget):
 
     def _resolve_startup_skin(self):
         """Pick the skin to show on launch: the user's last-loaded skin if
-        "restore last skin" is enabled and it still exists, otherwise fall
-        back to the bundled base-2.91 default skin (Symphony's out-of-the-
-        box look) rather than the plain unskinned rendering."""
+        "restore last skin" is enabled and it still exists, otherwise stay
+        unskinned so the app's own dark/green theme (buttons, sliders, LCD
+        panel) is what's actually visible out of the box.
+
+        A previous build of this app auto-selected and *persisted* the
+        bundled classic Winamp skin (base-2.91) as "last_skin_path" the
+        first time it ever ran. That means anyone who ran that build even
+        once has a config file that still points at it, so simply removing
+        the auto-load call isn't enough — we also have to stop treating
+        that particular stale, auto-assigned path as if it were a real user
+        choice, or the classic skin (with its own baked-in "kbps"/"kHz"
+        text and tiny sprite buttons/backgrounds, all of which clash with
+        the app's real theme) keeps coming back from old config files.
+        A skin the user picks explicitly via Options → Load Skin is always
+        respected."""
         last_skin = self.config.get("last_skin_path", "")
+        bundled_default = skin_mod.default_skin_path()
+        is_stale_bundled_default = bool(last_skin) and os.path.abspath(last_skin) == os.path.abspath(bundled_default)
+        if is_stale_bundled_default:
+            self.config["last_skin_path"] = ""
+            cfgmod.save(self.config)
+            return
         if self.config.get("restore_skin", True) and last_skin and os.path.isfile(last_skin):
             skin = WszSkin.load(last_skin)
             if skin.loaded:
                 self.skin = skin
                 self._apply_skin_controls()
-                return
 
-        default_path = skin_mod.default_skin_path()
-        if os.path.isfile(default_path):
-            skin = WszSkin.load(default_path)
-            if skin.loaded:
-                self.skin = skin
-                # Persist it so it round-trips through "restore last skin"
-                # and shows up as the active skin in the UI going forward.
-                self.config["last_skin_path"] = default_path
-                cfgmod.save(self.config)
-                self._apply_skin_controls()
+
+    def disable_skin(self):
+        self.skin = None
+        self.config['last_skin_path'] = ''
+        self._skin_color_cache = {}
+        theme = self.config.get('theme', 'dark')
+        self.apply_theme(theme)
+        self._apply_skin_controls()
+        if hasattr(self, 'playlist_window') and self.playlist_window:
+            self.playlist_window.apply_skin(None)
+        if hasattr(self, 'eq_window') and self.eq_window:
+            self.eq_window.apply_skin(None)
+        self.status_bar.showMessage('Skin disabled. Using default theme.', 3000)
 
     def _apply_skin_controls(self):
-        """Use real Winamp sprite buttons when the loaded skin provides them.
-
-        Seek is intentionally not mapped to previous/next: those actions are
-        different. It keeps the platform seek icons while sharing the same
-        transport stylesheet and footprint as the skinned controls.
-        """
         controls = (
-            ("previous", self.btn_prev, "PREV"),
-            ("play", self.btn_play, "▶"),
-            ("pause", self.btn_pause, "❚❚"),
-            ("stop", self.btn_stop, "■"),
-            ("next", self.btn_next, "NEXT"),
-            ("eject", self.btn_eject, "ADD"),
+            ("previous", getattr(self, "btn_prev", None), "|◄◄"),
+            ("play", getattr(self, "btn_play", None), "▶"),
+            ("pause", getattr(self, "btn_pause", None), "❚❚"),
+            ("stop", getattr(self, "btn_stop", None), "■"),
+            ("next", getattr(self, "btn_next", None), "►►|"),
+            ("eject", getattr(self, "btn_eject", None), "ADD"),
         )
         for name, button, fallback in controls:
-            pixmap = self.skin.transport_button(name)
-            if pixmap and not pixmap.isNull():
-                button.setIcon(QIcon(pixmap))
-                button.setIconSize(QSize(pixmap.width() * 2, pixmap.height() * 2))
-                button.setText("")
-                button.setMinimumWidth(max(34, pixmap.width() * 2 + 8))
-            else:
+            if button is not None:
                 button.setIcon(QIcon())
-                button.setIconSize(QSize(18, 18))
                 button.setText(fallback)
         toggle_controls = (
-            ("shuffle", self.btn_shuffle, "SHUFFLE"),
-            ("repeat", self.btn_repeat, "REPEAT"),
-            ("eq", self.btn_eq, "EQ"),
-            ("playlist", self.btn_pl, "PLAYLIST"),
+            ("shuffle", getattr(self, "btn_shuffle", None), "SHUFFLE"),
+            ("repeat", getattr(self, "btn_repeat", None), "REPEAT"),
+            ("eq", getattr(self, "btn_eq", None), "EQ"),
+            ("playlist", getattr(self, "btn_pl", None), "PLAYLIST"),
         )
         for name, button, fallback in toggle_controls:
-            pixmap = self.skin.toggle_button(name, button.isChecked(), False)
-            if pixmap and not pixmap.isNull():
-                button.setIcon(QIcon(pixmap))
-                button.setIconSize(QSize(pixmap.width() * 2, pixmap.height() * 2))
-                button.setText("")
-            else:
+            if button is not None:
                 button.setIcon(QIcon())
                 button.setText(fallback)
-        self.playlist_window.set_skin(self.skin)
-        has_skin = bool(self.skin.loaded)
-        self.btn_seek_back.setVisible(not has_skin)
-        self.btn_seek_fwd.setVisible(not has_skin)
-
-    # ---------------- UI construction ----------------
+        if hasattr(self, "playlist_window"):
+            self.playlist_window.set_skin(self.skin)
     def _build_ui(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
@@ -190,9 +189,7 @@ class MainWindow(QWidget):
 
         screen = QWidget()
         screen.setMinimumHeight(46)
-        screen.setStyleSheet(
-            "QWidget { background: rgba(5,18,5,225); border: 1px solid #15171d; }"
-        )
+        screen.setStyleSheet(f"QWidget {{ background: {theme_mod.palette(self._theme)['panel']}; border: 1px solid {theme_mod.palette(self._theme)['border']}; border-radius: 8px; }}")
         screen_layout = QVBoxLayout(screen)
         screen_layout.setContentsMargins(10, 6, 10, 6)
         screen_layout.setSpacing(2)
@@ -214,7 +211,7 @@ class MainWindow(QWidget):
         # Artist / genre now-playing line (item 7).
         self.artist_genre_label = QLabel("")
         self.artist_genre_label.setStyleSheet(
-            "color:#8fe08f; font-size:9px; font-family:'Courier New';")
+            "color:#8891a5; font-size:11px; font-weight:500;")
         screen_layout.addWidget(self.artist_genre_label)
 
         # Duration / seek bar lives right in the LCD "screen" panel, directly
@@ -228,8 +225,7 @@ class MainWindow(QWidget):
         self.time_total_label = QLabel("00:00")
         for lab in (self.time_current_label, self.time_total_label):
             lab.setStyleSheet(
-                "font-size:12px; font-weight:bold; color:#9dffb0; "
-                "font-family:'Courier New';"
+                "font-size:11px; font-weight:500; color:#8891a5;"
             )
             lab.setMinimumWidth(38)
         self.time_current_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
@@ -250,64 +246,107 @@ class MainWindow(QWidget):
         controls_layout.setSpacing(6)
 
         # No standalone "VOLUME" text label — the slider plus a compact
-        # icon+percentage chip is enough. Give the bar the remaining width so
-        # it is easy to grab on a wide window, while the chip stays compact.
+        # icon+percentage chip is enough. The bar is kept short and hugs the
+        # left edge (rather than stretching across the whole width) so it
+        # reads as one tidy control instead of a stray oversized bar.
         vb_row = QHBoxLayout()
         vb_row.setSpacing(8)
         self.vol_slider = WheelSlider(Qt.Horizontal)
         self.vol_slider.setRange(0, 100)
-        self.vol_slider.setMinimumHeight(16)
-        self.vol_slider.setMinimumWidth(180)
+        self.vol_slider.setFixedHeight(16)
+        self.vol_slider.setFixedWidth(100)
         self.vol_slider.setToolTip("Volume: 80%  (scroll to adjust)")
         self.vol_slider.setStyleSheet(theme_mod.volume_slider_qss(self._theme))
         self.vol_value_label = QLabel("🔊 80%")
         self.vol_value_label.setAlignment(Qt.AlignCenter)
-        self.vol_value_label.setMinimumWidth(56)
+        self.vol_value_label.setFixedWidth(58)
         self.vol_value_label.setStyleSheet(theme_mod.volume_value_label_qss(self._theme))
-        vb_row.addWidget(self.vol_slider, 1)
+        vb_row.addWidget(self.vol_slider)
         vb_row.addWidget(self.vol_value_label)
+        vb_row.addStretch(1)
         controls_layout.addLayout(vb_row)
 
         transport_wrap = QWidget()
         transport_wrap.setObjectName("transport_wrap")
         transport = QHBoxLayout(transport_wrap)
         transport.setContentsMargins(0, 0, 0, 0)
-        self.btn_prev = QPushButton("PREV")
-        self.btn_seek_back = QPushButton("SEEK −")
-        self.btn_play = QPushButton("▶")
-        self.btn_pause = QPushButton("❚❚")
-        self.btn_stop = QPushButton("■")
-        self.btn_seek_fwd = QPushButton("SEEK +")
-        self.btn_next = QPushButton("NEXT")
-        self.btn_eject = QPushButton("ADD")
-        self.btn_seek_back.setText("")
-        self.btn_seek_fwd.setText("")
-        self.btn_seek_back.setIcon(self.style().standardIcon(QStyle.SP_MediaSeekBackward))
-        self.btn_seek_fwd.setIcon(self.style().standardIcon(QStyle.SP_MediaSeekForward))
-        self.btn_seek_back.setIconSize(QSize(18, 18))
-        self.btn_seek_fwd.setIconSize(QSize(18, 18))
-        self.btn_seek_back.setToolTip("Seek back — tap for 5s, hold to ramp up to 10s")
-        self.btn_seek_fwd.setToolTip("Seek forward — tap for 5s, hold to ramp up to 10s")
-        for b in (
-            self.btn_prev, self.btn_seek_back, self.btn_play, self.btn_pause,
-             self.btn_stop, self.btn_seek_fwd, self.btn_next, self.btn_eject
-        ):
-            b.setMinimumHeight(30)
+        transport.setSpacing(6)
+        self.btn_prev = QPushButton()
+        self.btn_seek_back = QPushButton()
+        self.btn_play = QPushButton()
+        self.btn_pause = QPushButton()
+        self.btn_stop = QPushButton()
+        self.btn_seek_fwd = QPushButton()
+        self.btn_next = QPushButton()
+        self.btn_eject = QPushButton()
+        # One consistent icon-button treatment for the whole row (instead of
+        # a mix of plain text labels and icons), so it reads as one unit.
+        icon_map = (
+            (self.btn_prev, QStyle.SP_MediaSkipBackward, "Previous track"),
+            (self.btn_seek_back, QStyle.SP_MediaSeekBackward,
+             "Seek back — tap for 5s, hold to ramp up to 10s"),
+            (self.btn_play, QStyle.SP_MediaPlay, "Play"),
+            (self.btn_pause, QStyle.SP_MediaPause, "Pause"),
+            (self.btn_stop, QStyle.SP_MediaStop, "Stop"),
+            (self.btn_seek_fwd, QStyle.SP_MediaSeekForward,
+             "Seek forward — tap for 5s, hold to ramp up to 10s"),
+            (self.btn_next, QStyle.SP_MediaSkipForward, "Next track"),
+            (self.btn_eject, QStyle.SP_DialogOpenButton, "Add files"),
+        )
+        for b, std_icon, tip in icon_map:
+            b.setIcon(self.style().standardIcon(std_icon))
+            b.setIconSize(QSize(17, 17))
+            b.setToolTip(tip)
+                # Hide seek buttons to display 6 clean, wide transport buttons
+        self.btn_seek_back.hide()
+        self.btn_seek_fwd.hide()
+        for b in (self.btn_prev, self.btn_pause, self.btn_stop, self.btn_next, self.btn_eject):
+            b.setMinimumHeight(34)
+            b.setMinimumWidth(72)
+            b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             b.setObjectName("transport_button")
             transport.addWidget(b)
+        self.btn_play.setMinimumHeight(34)
+        self.btn_play.setMinimumWidth(80)
+        self.btn_play.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.btn_play.setObjectName("transport_button")
+        transport.insertWidget(0, self.btn_prev)
+        transport.insertWidget(1, self.btn_play)
+        transport.insertWidget(2, self.btn_pause)
+        transport.insertWidget(3, self.btn_stop)
+        transport.insertWidget(4, self.btn_next)
+        transport.insertWidget(5, self.btn_eject)
+        # Play is the primary action, so it gets its own object name to pick
+        # up the filled/pill treatment in transport_button_qss instead of
+        # blending into the rest of the row.
+        self.btn_play.setObjectName("transport_button_play")
         transport_wrap.setStyleSheet(theme_mod.transport_button_qss(self._theme))
         controls_layout.addWidget(transport_wrap)
 
-        toggles = QHBoxLayout()
+        toggles_wrap = QWidget()
+        toggles_wrap.setObjectName("toggles_wrap")
+        toggles = QHBoxLayout(toggles_wrap)
+        toggles.setContentsMargins(0, 0, 0, 0)
         self.btn_shuffle = QPushButton("SHUFFLE")
         self.btn_repeat = QPushButton("REPEAT")
         self.btn_eq = QPushButton("EQ")
         self.btn_pl = QPushButton("PLAYLIST")
         for b in (self.btn_shuffle, self.btn_repeat, self.btn_eq, self.btn_pl):
             b.setCheckable(True)
-            b.setMinimumHeight(25)
+            b.setFixedHeight(24)
+            b.setObjectName("toggle_button")
+            b.setFixedHeight(24)
+            b.setObjectName("toggle_button")
+            b.setFixedHeight(24)
+            b.setObjectName("toggle_button")
+            b.setFixedHeight(24)
+            b.setObjectName("toggle_button")
+            b.setMinimumHeight(28)
+            b.setObjectName("toggle_btn")
+            b.setStyleSheet(theme_mod.transport_button_qss(self._theme))
             toggles.addWidget(b)
-        controls_layout.addLayout(toggles)
+        toggles_wrap.setStyleSheet(theme_mod.eq_toggle_qss(self._theme))
+        controls_layout.addWidget(toggles_wrap)
 
         self.splitter.addWidget(screen)
         self.splitter.addWidget(controls)
@@ -330,9 +369,14 @@ class MainWindow(QWidget):
             if bg and not bg.isNull():
                 painter.drawPixmap(self.rect(), bg)
             else:
-                painter.fillRect(self.rect(), self.palette().window())
+                painter.fillRect(self.rect(), QColor(theme_mod.palette(self._theme)["bg"]))
         else:
-            painter.fillRect(self.rect(), self.palette().window())
+            # self.palette().window() is Qt's generic system color (often a
+            # light gray) and has nothing to do with the app's own dark/
+            # green theme, so unskinned windows used to show a mismatched
+            # background block behind the controls. Paint the actual theme
+            # background instead so it's coherent everywhere.
+            painter.fillRect(self.rect(), QColor(theme_mod.palette(self._theme)["bg"]))
         painter.end()
 
     # ---------------- wiring ----------------
@@ -435,6 +479,7 @@ class MainWindow(QWidget):
         menu.addAction("Load Playlist…", self.load_playlist_dialog)
         menu.addSeparator()
         menu.addAction("Load Skin (.wsz)…", self.load_skin_dialog)
+        menu.addAction("Disable Skin (Use Default Theme)", self._disable_skin)
         menu.addSeparator()
         menu.addAction("Internet Radio…", self.radio_dialog.show)
         menu.addSeparator()
@@ -473,12 +518,15 @@ class MainWindow(QWidget):
         for w in self.findChildren(QWidget):
             if w.objectName() == "transport_wrap":
                 w.setStyleSheet(theme_mod.transport_button_qss(theme_name))
+            elif w.objectName() == "toggles_wrap":
+                w.setStyleSheet(theme_mod.eq_toggle_qss(theme_name))
         self.seek_slider.setStyleSheet(theme_mod.seek_bar_qss(theme_name))
         self.vol_slider.setStyleSheet(theme_mod.volume_slider_qss(theme_name))
         self.vol_value_label.setStyleSheet(theme_mod.volume_value_label_qss(theme_name))
         dlg_qss = theme_mod.readable_dialog_qss(font_family, font_size)
         for dlg in (self.radio_dialog,):
             dlg.setStyleSheet(dlg_qss)
+        self.update()
 
     # ---------------- file / folder / skin loading ----------------
     def _add_paths(self, paths):
@@ -696,10 +744,6 @@ class MainWindow(QWidget):
                 parts.append(f"Artist: {track.artist}")
             if track.genre:
                 parts.append(f"Genre: {track.genre}")
-        if track.bitrate:
-            parts.append(f"{round(track.bitrate / 1000)}kbps")
-        if track.sample_rate:
-            parts.append(f"{track.sample_rate / 1000:.1f}kHz")
         self.artist_genre_label.setText("   ".join(parts))
 
     def toggle_play_pause(self):
@@ -854,6 +898,23 @@ class MainWindow(QWidget):
             elif os.path.splitext(p)[1].lower() in AUDIO_SUFFIXES:
                 paths.append(p)
         self._add_paths(sorted(set(paths), key=lambda p: p.lower()))
+
+    
+    def _disable_skin(self):
+        self.skin = WszSkin()
+        self.config["last_skin_path"] = ""
+        cfgmod.save(self.config)
+        self._apply_skin_controls()
+        self.setStyleSheet(theme_mod.app_stylesheet(
+            self._theme,
+            self.config.get("ui_font_family", ""),
+            self.config.get("ui_font_size", 11)
+        ))
+        if hasattr(self, "playlist_window"):
+            self.playlist_window.set_skin(self.skin)
+        if hasattr(self, "eq_window"):
+            self.eq_window.set_skin(self.skin)
+        self.update()
 
     def closeEvent(self, event):
         if self.config.get("confirm_quit", False):
