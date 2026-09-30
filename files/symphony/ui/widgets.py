@@ -3,7 +3,8 @@ import random
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QPainter, QColor, QLinearGradient, QFont
-from PyQt5.QtWidgets import QWidget, QLabel, QHBoxLayout, QSlider
+from PyQt5.QtWidgets import (QWidget, QLabel, QHBoxLayout, QSlider, QStyle,
+                             QStyleOptionSlider)
 
 
 class WheelSlider(QSlider):
@@ -17,6 +18,48 @@ class WheelSlider(QSlider):
     the seek bar share the same class."""
 
     wheel_scrolled = pyqtSignal(int)  # +1 per notch up/forward, -1 down/back
+
+    def __init__(self, *args, jump_on_click=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        # When True, a left click anywhere on the bar jumps the handle to that
+        # spot (and dragging keeps following the mouse). sliderPressed /
+        # sliderReleased fire exactly as they do for a normal handle drag, so
+        # the owner can seek on release. The mouse wheel is unaffected.
+        self._jump_on_click = jump_on_click
+
+    def _value_at(self, pos):
+        opt = QStyleOptionSlider()
+        self.initStyleOption(opt)
+        style = self.style()
+        groove = style.subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderGroove, self)
+        handle = style.subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderHandle, self)
+        span = max(1, groove.width() - handle.width())
+        x = pos.x() - groove.x() - handle.width() // 2
+        return QStyle.sliderValueFromPosition(
+            self.minimum(), self.maximum(), x, span, opt.upsideDown)
+
+    def mousePressEvent(self, event):
+        if self._jump_on_click and event.button() == Qt.LeftButton:
+            self.setSliderDown(True)
+            self.setValue(self._value_at(event.pos()))
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._jump_on_click and self.isSliderDown():
+            self.setValue(self._value_at(event.pos()))
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._jump_on_click and event.button() == Qt.LeftButton and self.isSliderDown():
+            self.setValue(self._value_at(event.pos()))
+            self.setSliderDown(False)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def wheelEvent(self, event):
         delta = event.angleDelta().y()
@@ -137,11 +180,17 @@ class TitleScroller(QLabel):
         super().__init__(parent)
         self._full_text = ""
         self._offset = 0
-        self.setStyleSheet("color:#7fff3f; font-family:'Courier New'; font-size:11px;")
+        self.set_display_font("", 11)
         self._timer = QTimer(self)
         self._timer.setInterval(200)
         self._timer.timeout.connect(self._advance)
         self._timer.start()
+
+    def set_display_font(self, family: str = "", size: int = 11):
+        fam = (family or "").strip().replace("'", "")
+        stack = f"'{fam}', 'Courier New', monospace" if fam else "'Courier New', monospace"
+        self.setStyleSheet(
+            f"color:#7fff3f; font-family:{stack}; font-size:{int(size or 11)}px;")
 
     def set_text(self, text: str):
         self._full_text = text + "   //   "

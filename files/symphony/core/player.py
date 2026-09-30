@@ -104,7 +104,7 @@ class PlayerEngine(QObject):
     # ---------- volume / balance ----------
     def set_volume(self, vol_0_100: int):
         self._volume = max(0, min(100, vol_0_100))
-        self._player.audio_set_volume(self._volume)
+        self._apply_output_volume()
 
     def get_volume(self) -> int:
         return self._volume
@@ -123,10 +123,34 @@ class PlayerEngine(QObject):
         return self._balance
 
     # ---------- equalizer ----------
+    def _eq_gain_compensation_db(self) -> float:
+        """Estimate the perceived gain added by the current EQ curve.
+
+        Peak-only compensation makes treble/bass presets sound unnecessarily
+        quiet, so use the curve's average gain for loudness matching. Negative
+        curves are allowed to receive output gain, subject to LibVLC's normal
+        0-100 volume ceiling.
+        """
+        average_band = sum(self._eq_bands) / len(self._eq_bands) if self._eq_bands else 0.0
+        return self._eq_preamp + average_band
+
+    def _apply_output_volume(self):
+        """Avoid adding another large attenuation when EQ is enabled.
+
+        LibVLC's equalizer already has its own internal headroom. Applying a
+        second peak-based reduction here made EQ sound conspicuously soft.
+        Keep the requested volume unchanged for boosted/flat curves and only
+        recover gain when the curve itself is cutting the average signal.
+        """
+        volume = float(self._volume)
+        if self._eq_enabled:
+            curve_gain = self._eq_gain_compensation_db()
+            if curve_gain < 0:
+                volume *= 10 ** (-curve_gain / 20.0)
+        self._player.audio_set_volume(max(0, min(200, round(volume))))
+
     def set_preamp(self, db: float):
         self._eq_preamp = max(-20.0, min(20.0, float(db)))
-        self._equalizer.set_preamp(self._eq_preamp)
-        print(f"[EQ] Preamp -> {self._eq_preamp:+.1f} dB (Active: {self._eq_enabled})")
         self._apply_equalizer()
 
     def set_band(self, index: int, db: float):
@@ -161,7 +185,6 @@ class PlayerEngine(QObject):
         if 0 <= index < len(self._eq_bands):
             self._eq_bands[index] = max(-20.0, min(20.0, float(db)))
             self._apply_classic_curve()
-            print(f"[EQ] Band {index} ({self._classic_frequencies[index]:.0f}Hz) -> {self._eq_bands[index]:+.1f} dB | Active: {self._eq_enabled} | Playing: {self.is_playing()}")
             self._apply_equalizer()
 
     def get_classic_band_values(self):
@@ -172,7 +195,6 @@ class PlayerEngine(QObject):
 
     def set_eq_enabled(self, enabled: bool):
         self._eq_enabled = bool(enabled)
-        print(f"[EQ] Equalizer {'ENABLED' if self._eq_enabled else 'DISABLED'} (Playing: {self.is_playing()})")
         self._apply_equalizer()
 
     def apply_preset_db(self, values_10_band, preamp_db=0.0):
@@ -180,7 +202,6 @@ class PlayerEngine(QObject):
         for i, value in enumerate(values_10_band[:len(self._eq_bands)]):
             self._eq_bands[i] = max(-20.0, min(20.0, float(value)))
         self._apply_classic_curve()
-        print(f"[EQ] Preset applied: preamp={preamp_db:+.1f}dB, bands={[round(x,1) for x in self._eq_bands]}")
         self._apply_equalizer()
 
     def _build_classic_band_map(self):
@@ -198,7 +219,9 @@ class PlayerEngine(QObject):
         ]
 
     def _apply_equalizer(self):
+        self._equalizer.set_preamp(self._eq_preamp)
         self._player.set_equalizer(self._equalizer if self._eq_enabled else None)
+        self._apply_output_volume()
 
     # ---------- internal ----------
     def _poll_position(self):

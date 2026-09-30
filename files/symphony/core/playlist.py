@@ -15,12 +15,14 @@ class Track:
     genre: str = ""
     bitrate: Optional[int] = None       # bits per second
     sample_rate: Optional[int] = None   # Hz
+    album: str = ""
 
     def to_dict(self) -> dict:
         return {
             "title": self.title, "source": self.source, "uri": self.uri,
             "duration": self.duration, "artist": self.artist, "genre": self.genre,
             "bitrate": self.bitrate, "sample_rate": self.sample_rate,
+            "album": self.album,
         }
 
     @classmethod
@@ -30,6 +32,7 @@ class Track:
             uri=d.get("uri", ""), duration=d.get("duration"),
             artist=d.get("artist", ""), genre=d.get("genre", ""),
             bitrate=d.get("bitrate"), sample_rate=d.get("sample_rate"),
+            album=d.get("album", ""),
         )
 
 

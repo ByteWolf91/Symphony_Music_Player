@@ -1,9 +1,12 @@
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-                              QListWidget, QPushButton)
+from PyQt5.QtWidgets import (QVBoxLayout, QHBoxLayout, QWidget, QLabel, QListWidget,
+                             QListWidgetItem, QPushButton, QMenu, QAbstractItemView)
+
+from symphony.ui.track_table import (TrackWindow, make_table, fill_table, track_matches,
+                                     row_track, MENU_QSS)
 
 
-class PlaylistWindow(QWidget):
+class PlaylistWindow(TrackWindow):
     play_index_requested = pyqtSignal(int)
     remove_index_requested = pyqtSignal(int)
     clear_requested = pyqtSignal()
@@ -16,64 +19,44 @@ class PlaylistWindow(QWidget):
     radio_favorites_requested = pyqtSignal()
     save_playlist_requested = pyqtSignal()
     load_playlist_requested = pyqtSignal()
-    # Emitted whenever the window is actually shown/hidden (including via its
-    # own titlebar close button), so the main window's toggle button stays
-    # in sync instead of needing a second click to react.
-    visibility_changed = pyqtSignal(bool)
+    # visibility_changed (inherited) keeps the main window's toggle button in
+    # sync, including when the window is closed from its own titlebar.
 
-    SOURCE_ICONS = {"radio": "📻 ", "cd": "💿 "}
-
-    def __init__(self, parent=None, font_family="", font_size=11):
-        super().__init__(parent, Qt.Window)
-        self.setWindowTitle("Symphony Playlist")
-        self.setMinimumSize(520, 300)
-        self.resize(620, 430)
-        self._font_family = font_family
-        self._font_size = font_size
+    def __init__(self, parent=None, font_family="", font_size=11,
+                 list_font_family="", list_font_size=0):
+        super().__init__("Symphony Playlist", parent, font_family, font_size,
+                         list_font_family, list_font_size)
+        self.setMinimumSize(640, 320)
+        self.resize(760, 460)
         # Maps a row in the radio-stations panel back to its index in the
         # full playlist, so double-clicking there plays the right track.
         self._radio_index_map = []
-        self._apply_font_style()
-        self._drag_pos = None
+        self._table_index_map = []
+        self._tracks = []
         self._build_ui()
+        self._register_views(self.table, self.radio_list)
+        self._apply_styles()
 
     def _build_ui(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
+        self._build_titlebar(root, "PLAYLIST EDITOR")
+        self._build_search(root, "Search playlist by artist, album or song…")
 
-        titlebar = QWidget()
-        titlebar.setFixedHeight(16)
-        titlebar.setStyleSheet("background:#152048;")
-        tb_layout = QHBoxLayout(titlebar)
-        tb_layout.setContentsMargins(4, 0, 4, 0)
-        label = QLabel("PLAYLIST EDITOR")
-        label.setStyleSheet("color:#cfe0ff; font-weight:bold;")
-        close_btn = QPushButton("×")
-        close_btn.setFixedSize(14, 14)
-        close_btn.clicked.connect(self.hide)
-        tb_layout.addWidget(label)
-        tb_layout.addStretch()
-        tb_layout.addWidget(close_btn)
-        titlebar.mousePressEvent = self._start_drag
-        titlebar.mouseMoveEvent = self._do_drag
-        root.addWidget(titlebar)
+        # Rows always equal playlist indices here (no sorting), so a row
+        # number can be handed straight back to the main window.
+        self.table = make_table(["#", "Artist", "Song", "Album", "Duration"])
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.cellDoubleClicked.connect(
+            lambda row, _c: self._play_table_row(row))
+        self.table.customContextMenuRequested.connect(self._show_context_menu)
+        self.table.keyPressEvent = self._table_key_press  # Enter plays the row
+        root.addWidget(self.table, 1)
 
-        self.list_widget = QListWidget()
-        self.list_widget.setStyleSheet(
-            "background:#10141c; color:#f4f7fb; border:1px solid #465166;")
-        self.list_widget.itemDoubleClicked.connect(self._on_item_double_clicked)
-        self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
-        # Enter plays the selected row; Up/Down/PageUp/PageDown navigation
-        # is QListWidget's native behavior already.
-        self.list_widget.keyPressEvent = self._list_key_press
-        root.addWidget(self.list_widget, 1)
-
-        # A dedicated radio-stations section, separate from the main list,
-        # so saved/queued stations are easy to spot and jump to instead of
-        # being buried among local files. Only takes up space once there's
-        # at least one radio track in the playlist.
+        # A dedicated radio-stations section, separate from the main list, so
+        # saved/queued stations are easy to spot. Only takes up space once
+        # there is at least one radio track in the playlist.
         self.radio_section = QWidget()
         radio_layout = QVBoxLayout(self.radio_section)
         radio_layout.setContentsMargins(0, 4, 0, 0)
@@ -84,8 +67,6 @@ class PlaylistWindow(QWidget):
         radio_layout.addWidget(self.radio_header_label)
         self.radio_list = QListWidget()
         self.radio_list.setMaximumHeight(84)
-        self.radio_list.setStyleSheet(
-            "background:#10141c; color:#f4f7fb; border:1px solid #465166;")
         self.radio_list.itemDoubleClicked.connect(self._on_radio_item_double_clicked)
         radio_layout.addWidget(self.radio_list)
         root.addWidget(self.radio_section)
@@ -144,133 +125,107 @@ class PlaylistWindow(QWidget):
             pl_row.addWidget(b)
         root.addLayout(pl_row)
 
-    def set_font(self, font_family="", font_size=11):
-        self._font_family = font_family
-        self._font_size = font_size
-        self._apply_font_style()
-
-    def set_skin(self, skin):
-        """Apply classic pledit.txt colors when a Winamp skin provides them."""
-        colors = getattr(skin, "pledit_colors", {}) if skin else {}
-
-        def color(name, fallback):
-            raw = colors.get(name.lower(), "").replace(" ", "")
-            if raw.startswith("#"):
-                return raw
-            parts = raw.split(",")
-            if len(parts) >= 3 and all(part.lstrip("-").isdigit() for part in parts[:3]):
-                try:
-                    r, g, b = (max(0, min(255, int(part))) for part in parts[:3])
-                    return f"rgb({r},{g},{b})"
-                except ValueError:
-                    pass
-            return fallback
-
-        bg = color("normalbg", "#10141c")
-        text = color("normal", "#f4f7fb")
-        selected_bg = color("selectionbg", "#214d3a")
-        selected = color("selection", "#ffffff")
-        list_qss = (
-            f"QListWidget {{ background:{bg}; color:{text}; "
-            f"border:1px solid #465166; }}"
-            f"QListWidget::item:selected {{ background:{selected_bg}; "
-            f"color:{selected}; }}"
-        )
-        self.list_widget.setStyleSheet(list_qss)
-        self.radio_list.setStyleSheet(list_qss)
-
-    def _apply_font_style(self):
-        family = self._font_family.strip() or "Segoe UI, Noto Sans, sans-serif"
-        size = max(8, min(24, int(self._font_size or 11)))
-        self.setStyleSheet(
-            f"QWidget {{ background:#171b24; border:1px solid #15171d; "
-            f"font-family:{family}; font-size:{size}px; }}"
-            f"QListWidget {{ background:#10141c; color:#f4f7fb; "
-            f"font-family:{family}; font-size:{size}px; border:1px solid #465166; }}"
-        )
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        self.visibility_changed.emit(True)
-
-    def hideEvent(self, event):
-        super().hideEvent(event)
-        self.visibility_changed.emit(False)
-
+    # ---------------- content ----------------
     def refresh(self, tracks, current_index: int, total_seconds: float):
-        self.list_widget.clear()
+        scroll = self.table.verticalScrollBar().value()
+        selected = self.table.currentRow()
+        self._tracks = list(tracks)
+        table_tracks = [
+            (index, track) for index, track in enumerate(self._tracks)
+            if track.source != "radio"
+        ]
+        self._table_index_map = [index for index, _track in table_tracks]
+        fill_table(
+            self.table,
+            [track for _index, track in table_tracks],
+            current_index,
+            numbered=True,
+            track_indices=self._table_index_map,
+        )
+
         self.radio_list.clear()
         self._radio_index_map = []
-        for i, track in enumerate(tracks):
-            marker = "▶ " if i == current_index else f"{i + 1}. "
-            icon = self.SOURCE_ICONS.get(track.source, "")
-            display = f"{track.artist} - {track.title}" if track.artist else track.title
-            self.list_widget.addItem(f"{marker}{icon}{display}")
+        for i, track in enumerate(self._tracks):
             if track.source == "radio":
-                radio_marker = "▶ " if i == current_index else ""
-                self.radio_list.addItem(f"{radio_marker}{track.title}")
+                marker = "▶ " if i == current_index else ""
+                name = (track.title or "").strip() or (track.uri or "Unnamed station")
+                item = QListWidgetItem(f"{marker}{name}")
+                item.setToolTip(track.uri or "")
+                self.radio_list.addItem(item)
                 self._radio_index_map.append(i)
         self.radio_header_label.setText(f"📻 RADIO STATIONS ({len(self._radio_index_map)})")
         self.radio_section.setVisible(bool(self._radio_index_map))
-        self.count_label.setText(f"{len(tracks)} items")
+
         m, s = divmod(int(total_seconds), 60)
         self.total_label.setText(f"{m:02d}:{s:02d}")
 
-    def selected_index(self) -> int:
-        return self.list_widget.currentRow()
+        if 0 <= selected < self.table.rowCount():
+            self.table.setCurrentCell(selected, 1)
+        self.table.verticalScrollBar().setValue(scroll)
+        # Re-apply any active search, since the rows were just rebuilt.
+        self._apply_filter()
 
-    def _on_item_double_clicked(self, item):
-        self.play_index_requested.emit(self.list_widget.row(item))
+    def _filter_done(self, matched, total, active):
+        self.count_label.setText(f"{matched} of {total} items" if active else f"{total} items")
+        query = self.search_box.text().strip().lower()
+        for row in range(self.radio_list.count()):
+            idx = self._radio_index_map[row] if row < len(self._radio_index_map) else -1
+            track = self._tracks[idx] if 0 <= idx < len(self._tracks) else None
+            self.radio_list.item(row).setHidden(
+                bool(query) and track is not None and not track_matches(track, query))
+
+    def selected_index(self) -> int:
+        row = self.table.currentRow()
+        return self._playlist_index_for_row(row)
+
+    # ---------------- interaction ----------------
+    def _playlist_index_for_row(self, row):
+        if row < 0 or row >= self.table.rowCount():
+            return -1
+        track = row_track(self.table, row)
+        if track is not None:
+            for index, candidate in enumerate(self._tracks):
+                if candidate is track:
+                    return index
+        return (
+            self._table_index_map[row]
+            if row < len(self._table_index_map)
+            else -1
+        )
+
+    def _play_table_row(self, row):
+        index = self._playlist_index_for_row(row)
+        if index >= 0:
+            self.play_index_requested.emit(index)
 
     def _on_radio_item_double_clicked(self, item):
         row = self.radio_list.row(item)
         if 0 <= row < len(self._radio_index_map):
             self.play_index_requested.emit(self._radio_index_map[row])
 
-    def _list_key_press(self, event):
+    def _table_key_press(self, event):
         if event.key() in (Qt.Key_Return, Qt.Key_Enter):
-            row = self.list_widget.currentRow()
-            if row >= 0:
-                self.play_index_requested.emit(row)
+            row = self.table.currentRow()
+            self._play_table_row(row)
             return
-        QListWidget.keyPressEvent(self.list_widget, event)
+        type(self.table).keyPressEvent(self.table, event)
 
     def _on_remove_clicked(self):
-        self.remove_index_requested.emit(self.list_widget.currentRow())
-
-    def _start_drag(self, event):
-        self._drag_pos = event.globalPos() - self.frameGeometry().topLeft()
-
-    def _do_drag(self, event):
-        if self._drag_pos is not None:
-            self.move(event.globalPos() - self._drag_pos)
-
-
-    def contextMenuEvent(self, event):
-        menu = QMenu(self)
-        act_add_file = menu.addAction('Add File(s)...')
-        act_add_folder = menu.addAction('Add Folder...')
-        menu.addSeparator()
-        act_remove = menu.addAction('Remove Selected Track')
-        act_clear = menu.addAction('Clear Playlist')
-        action = menu.exec_(event.globalPos())
-        if action == act_add_file:
-            if hasattr(self, 'on_add_file'): self.on_add_file()
-            elif hasattr(self, 'add_files_dialog'): self.add_files_dialog()
-        elif action == act_add_folder:
-            if hasattr(self, 'on_add_directory'): self.on_add_directory()
-            elif hasattr(self, 'add_folder_dialog'): self.add_folder_dialog()
-        elif action == act_remove:
-            if hasattr(self, 'remove_selected'): self.remove_selected()
-        elif action == act_clear:
-            if hasattr(self, 'clear_playlist'): self.clear_playlist()
+        self.remove_index_requested.emit(self.selected_index())
 
     def _show_context_menu(self, pos):
+        # Act on the row under the cursor (not whatever was selected before).
+        row = self.table.rowAt(pos.y())
         menu = QMenu(self)
+        menu.setStyleSheet(MENU_QSS)
+        if row >= 0:
+            self.table.selectRow(row)
+            index = self._playlist_index_for_row(row)
+            menu.addAction("Play", lambda: self.play_index_requested.emit(index))
+            menu.addAction("Remove Track", lambda: self.remove_index_requested.emit(index))
+            menu.addSeparator()
         menu.addAction("Add File(s)…", self.add_files_requested.emit)
         menu.addAction("Add Folder…", self.add_folder_requested.emit)
         menu.addSeparator()
-        if self.list_widget.currentRow() >= 0:
-            menu.addAction("Remove Selected Track", lambda: self.remove_index_requested.emit(self.list_widget.currentRow()))
         menu.addAction("Clear Playlist", self.clear_requested.emit)
-        menu.exec_(self.list_widget.viewport().mapToGlobal(pos))
+        menu.exec_(self.table.viewport().mapToGlobal(pos))

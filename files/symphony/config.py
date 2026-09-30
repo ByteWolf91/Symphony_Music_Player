@@ -26,10 +26,21 @@ DEFAULTS = {
     "now_playing_height": 70,
     "ui_font_family": "",
     "ui_font_size": 11,
+    "list_font_family": "",       # playlist / library font ("" = same as UI)
+    "list_font_size": 0,          # 0 = same as UI size
+    "display_font_family": "",    # now-playing display font ("" = Courier New)
+    "display_font_size": 11,
+    "custom_font_files": [],      # .ttf/.otf files the user added
+    "restore_playlist": True,
+    "session_playlist": [],
+    "window_width": 380,
+    "window_height": 300,
     "eq_enabled": False,
     "eq_preset": "Flat",
     "eq_preamp": 0.0,
     "eq_bands": [0.0] * 10,
+    "remember_playlists": True,
+    "recent_playlists": [],
 }
 
 

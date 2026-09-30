@@ -53,7 +53,7 @@ class EqWindow(QWidget):
 
     def _apply_window_style(self):
         palette = theme_mod.palette(self._theme)
-        family = self._font_family.strip() or "Segoe UI, Noto Sans, sans-serif"
+        family = theme_mod.css_family(self._font_family)
         size = max(8, min(24, int(self._font_size or 11)))
         self.setStyleSheet(
             f"QWidget {{ background:{palette['bg']}; border:1px solid #15171d; "

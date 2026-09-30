@@ -95,6 +95,14 @@ QWidget#transport_wrap QPushButton:pressed {{
 }}
 """
 
+def css_family(family: str = "") -> str:
+    """Quote a font family for QSS and add safe fallbacks, so names with
+    spaces or digits ("DejaVu Sans Mono", "Source Sans 3") always resolve."""
+    fam = (family or "").strip().replace("'", "").replace('"', "")
+    fallback = "'Segoe UI', 'Noto Sans', sans-serif"
+    return f"'{fam}', {fallback}" if fam else fallback
+
+
 def readable_dialog_qss(font_family: str = "", font_size: int = 11) -> str:
     family_decl = f"font-family: '{font_family}';" if font_family else ""
     return f"""

@@ -25,6 +25,7 @@ from symphony.ui.preferences_dialog import PreferencesDialog
 from symphony.ui.shortcuts_dialog import ShortcutsDialog
 from symphony.ui.youtube_dialog import YouTubeDownloadDialog
 from symphony.ui import theme as theme_mod
+from symphony import fonts as fonts_mod
 
 AUDIO_EXTENSIONS = (
     "Audio files (*.mp3 *.wav *.flac *.ogg *.oga *.opus *.m4a *.aac *.wma "
@@ -34,6 +35,7 @@ AUDIO_SUFFIXES = {
     ".mp3", ".wav", ".flac", ".ogg", ".oga", ".opus", ".m4a", ".aac",
     ".wma", ".ape", ".aiff", ".aif", ".mid", ".mod", ".xm", ".it", ".s3m"
 }
+SKIP_LONG_PRESS_MS = 350  # hold a skip button this long to start seeking
 PLAYLIST_FILTER = "Symphony playlist (*.sympl);;M3U playlist (*.m3u *.m3u8);;All files (*)"
 
 
@@ -49,17 +51,22 @@ class MainWindow(QWidget):
         super().__init__(None, Qt.Window)
 
         self.config = cfgmod.load()
+        fonts_mod.load_saved_fonts(self.config.get("custom_font_files", []))
         self.skin = WszSkin()
         self.player = PlayerEngine()
         self.playlist = Playlist()
         self._seek_dragging = False
         self._seek_hold_timer = None
         self._seek_hold_amount = 5
+        self._skip_long_press_timer = None
+        self._skip_seeked = False
         self._theme = self.config.get("theme", "dark")
 
         self.setWindowTitle("Symphony")
-        self.setMinimumSize(420, 300)
-        self.resize(560, 390)
+        # A compact, Winamp-like footprint by default — small enough to sit
+        # in a corner of the screen — while still fitting every control.
+        self.setMinimumSize(360, 260)
+        self.resize(*self._startup_size())
         self.setAcceptDrops(True)
         if self.config.get("always_on_top", False):
             self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
@@ -72,6 +79,8 @@ class MainWindow(QWidget):
         self.playlist_window = PlaylistWindow(
             font_family=self.config.get("ui_font_family", ""),
             font_size=self.config.get("ui_font_size", 11),
+            list_font_family=self.config.get("list_font_family", ""),
+            list_font_size=self.config.get("list_font_size", 0),
         )
         self.radio_dialog = RadioDialog(self.config)
         self.youtube_dialog = None
@@ -87,6 +96,10 @@ class MainWindow(QWidget):
         self.btn_shuffle.setChecked(self.config.get("shuffle", False))
         self.btn_repeat.setChecked(self.config.get("repeat", False))
 
+        self.title_scroller.set_display_font(
+            self.config.get("display_font_family", ""),
+            self.config.get("display_font_size", 11))
+        self._restore_session_playlist()
         self._resolve_startup_skin()
         self.eq_window.load_values(
             enabled=self.config.get("eq_enabled", False),
@@ -94,6 +107,20 @@ class MainWindow(QWidget):
             bands=self.config.get("eq_bands", [0] * 10),
             preset=self.config.get("eq_preset", "Flat"),
         )
+
+    def _startup_size(self):
+        """The window size to open at: whatever the user last resized it to
+        (so a manual resize actually sticks between launches), clamped to
+        the current screen in case it was saved on a larger display."""
+        w = int(self.config.get("window_width", 380))
+        h = int(self.config.get("window_height", 300))
+        try:
+            avail = QApplication.primaryScreen().availableGeometry()
+            w = min(w, avail.width())
+            h = min(h, avail.height())
+        except Exception:
+            pass
+        return max(360, w), max(260, h)
 
     def _resolve_startup_skin(self):
         """Pick the skin to show on launch: the user's last-loaded skin if
@@ -146,7 +173,6 @@ class MainWindow(QWidget):
             ("pause", getattr(self, "btn_pause", None), "❚❚"),
             ("stop", getattr(self, "btn_stop", None), "■"),
             ("next", getattr(self, "btn_next", None), "►►|"),
-            ("eject", getattr(self, "btn_eject", None), "ADD"),
         )
         for name, button, fallback in controls:
             if button is not None:
@@ -230,7 +256,7 @@ class MainWindow(QWidget):
             lab.setMinimumWidth(38)
         self.time_current_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.time_total_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.seek_slider = WheelSlider(Qt.Horizontal)
+        self.seek_slider = WheelSlider(Qt.Horizontal, jump_on_click=True)
         self.seek_slider.setRange(0, 1000)
         self.seek_slider.setMinimumHeight(22)
         self.seek_slider.setToolTip("Seek: 00:00 / 00:00  (scroll to seek)")
@@ -278,11 +304,10 @@ class MainWindow(QWidget):
         self.btn_stop = QPushButton()
         self.btn_seek_fwd = QPushButton()
         self.btn_next = QPushButton()
-        self.btn_eject = QPushButton()
         # One consistent icon-button treatment for the whole row (instead of
         # a mix of plain text labels and icons), so it reads as one unit.
         icon_map = (
-            (self.btn_prev, QStyle.SP_MediaSkipBackward, "Previous track"),
+            (self.btn_prev, QStyle.SP_MediaSkipBackward, "Previous track — hold to seek back (5s, ramping to 10s)"),
             (self.btn_seek_back, QStyle.SP_MediaSeekBackward,
              "Seek back — tap for 5s, hold to ramp up to 10s"),
             (self.btn_play, QStyle.SP_MediaPlay, "Play"),
@@ -290,24 +315,23 @@ class MainWindow(QWidget):
             (self.btn_stop, QStyle.SP_MediaStop, "Stop"),
             (self.btn_seek_fwd, QStyle.SP_MediaSeekForward,
              "Seek forward — tap for 5s, hold to ramp up to 10s"),
-            (self.btn_next, QStyle.SP_MediaSkipForward, "Next track"),
-            (self.btn_eject, QStyle.SP_DialogOpenButton, "Add files"),
+            (self.btn_next, QStyle.SP_MediaSkipForward, "Next track — hold to seek forward (5s, ramping to 10s)"),
         )
         for b, std_icon, tip in icon_map:
             b.setIcon(self.style().standardIcon(std_icon))
             b.setIconSize(QSize(17, 17))
             b.setToolTip(tip)
-                # Hide seek buttons to display 6 clean, wide transport buttons
+                # Hide seek buttons to display 5 clean, wide transport buttons
         self.btn_seek_back.hide()
         self.btn_seek_fwd.hide()
-        for b in (self.btn_prev, self.btn_pause, self.btn_stop, self.btn_next, self.btn_eject):
-            b.setMinimumHeight(34)
-            b.setMinimumWidth(72)
+        for b in (self.btn_prev, self.btn_pause, self.btn_stop, self.btn_next):
+            b.setMinimumHeight(30)
+            b.setMinimumWidth(56)
             b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             b.setObjectName("transport_button")
             transport.addWidget(b)
-        self.btn_play.setMinimumHeight(34)
-        self.btn_play.setMinimumWidth(80)
+        self.btn_play.setMinimumHeight(30)
+        self.btn_play.setMinimumWidth(64)
         self.btn_play.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.btn_play.setObjectName("transport_button")
         transport.insertWidget(0, self.btn_prev)
@@ -315,7 +339,6 @@ class MainWindow(QWidget):
         transport.insertWidget(2, self.btn_pause)
         transport.insertWidget(3, self.btn_stop)
         transport.insertWidget(4, self.btn_next)
-        transport.insertWidget(5, self.btn_eject)
         # Play is the primary action, so it gets its own object name to pick
         # up the filled/pill treatment in transport_button_qss instead of
         # blending into the rest of the row.
@@ -333,15 +356,7 @@ class MainWindow(QWidget):
         self.btn_pl = QPushButton("PLAYLIST")
         for b in (self.btn_shuffle, self.btn_repeat, self.btn_eq, self.btn_pl):
             b.setCheckable(True)
-            b.setFixedHeight(24)
-            b.setObjectName("toggle_button")
-            b.setFixedHeight(24)
-            b.setObjectName("toggle_button")
-            b.setFixedHeight(24)
-            b.setObjectName("toggle_button")
-            b.setFixedHeight(24)
-            b.setObjectName("toggle_button")
-            b.setMinimumHeight(28)
+            b.setMinimumHeight(26)
             b.setObjectName("toggle_btn")
             b.setStyleSheet(theme_mod.transport_button_qss(self._theme))
             toggles.addWidget(b)
@@ -384,9 +399,11 @@ class MainWindow(QWidget):
         self.btn_play.clicked.connect(self.play_current)
         self.btn_pause.clicked.connect(self.player.pause)
         self.btn_stop.clicked.connect(self.player.stop)
-        self.btn_next.clicked.connect(self.next_track)
-        self.btn_prev.clicked.connect(self.prev_track)
-        self.btn_eject.clicked.connect(self.add_files_dialog)
+        # Skip buttons: tap = change track, hold = seek within the track.
+        self.btn_next.pressed.connect(lambda: self._on_skip_pressed(1))
+        self.btn_next.released.connect(lambda: self._on_skip_released(1))
+        self.btn_prev.pressed.connect(lambda: self._on_skip_pressed(-1))
+        self.btn_prev.released.connect(lambda: self._on_skip_released(-1))
         self.btn_seek_back.pressed.connect(lambda: self._start_seek_hold(-1))
         self.btn_seek_back.released.connect(self._stop_seek_hold)
         self.btn_seek_fwd.pressed.connect(lambda: self._start_seek_hold(1))
@@ -396,8 +413,10 @@ class MainWindow(QWidget):
         self.btn_repeat.toggled.connect(lambda v: setattr(self.playlist, "repeat", v))
         self.btn_shuffle.toggled.connect(lambda: self._apply_skin_controls())
         self.btn_repeat.toggled.connect(lambda: self._apply_skin_controls())
-        self.btn_eq.toggled.connect(self.eq_window.setVisible)
-        self.btn_pl.toggled.connect(self.playlist_window.setVisible)
+        self.btn_eq.toggled.connect(
+            lambda checked: self._toggle_tool_window(self.eq_window, checked))
+        self.btn_pl.toggled.connect(
+            lambda checked: self._toggle_tool_window(self.playlist_window, checked))
         self.btn_eq.toggled.connect(lambda: self._apply_skin_controls())
         self.btn_pl.toggled.connect(lambda: self._apply_skin_controls())
         # Keep the toggle buttons in sync even when a satellite window is
@@ -432,9 +451,21 @@ class MainWindow(QWidget):
         self.playlist_window.radio_favorites_requested.connect(self.radio_dialog.show_favorites)
         self.playlist_window.save_playlist_requested.connect(self.save_playlist_dialog)
         self.playlist_window.load_playlist_requested.connect(self.load_playlist_dialog)
-
         self.radio_dialog.station_chosen.connect(
             lambda name, url: self._on_plugin_track_chosen("radio", name, url))
+
+    @staticmethod
+    def _toggle_tool_window(window, checked):
+        """Make a checked EQ/Playlist button restore a minimized window too."""
+        if checked:
+            if window.isMinimized():
+                window.showNormal()
+            else:
+                window.show()
+            window.raise_()
+            window.activateWindow()
+        else:
+            window.hide()
 
     def _register_shortcuts(self):
         bindings = {
@@ -477,6 +508,14 @@ class MainWindow(QWidget):
         menu.addSeparator()
         menu.addAction("Save Playlist…", self.save_playlist_dialog)
         menu.addAction("Load Playlist…", self.load_playlist_dialog)
+        recents = [p for p in self.config.get("recent_playlists", []) if os.path.isfile(p)]
+        if self.config.get("remember_playlists", True) and recents:
+            recent_menu = menu.addMenu("Recent Playlists")
+            for path in recents:
+                act = recent_menu.addAction(os.path.basename(path))
+                act.setToolTip(path)
+                act.triggered.connect(
+                    lambda checked=False, p=path: self._load_playlist_from_path(p))
         menu.addSeparator()
         menu.addAction("Load Skin (.wsz)…", self.load_skin_dialog)
         menu.addAction("Disable Skin (Use Default Theme)", self._disable_skin)
@@ -513,8 +552,12 @@ class MainWindow(QWidget):
             app.setStyleSheet(theme_mod.app_stylesheet(theme_name, font_family, font_size))
         self.eq_window.set_theme(theme_name)
         self.eq_window.set_font(font_family, font_size)
-        self.playlist_window.set_font(font_family, font_size)
+        self.playlist_window.set_theme(theme_name)
+        list_family = self.config.get("list_font_family", "")
+        list_size = self.config.get("list_font_size", 0)
+        self.playlist_window.set_font(font_family, font_size, list_family, list_size)
         self.playlist_window.set_skin(self.skin)
+        self._update_now_playing_label()
         for w in self.findChildren(QWidget):
             if w.objectName() == "transport_wrap":
                 w.setStyleSheet(theme_mod.transport_button_qss(theme_name))
@@ -526,6 +569,9 @@ class MainWindow(QWidget):
         dlg_qss = theme_mod.readable_dialog_qss(font_family, font_size)
         for dlg in (self.radio_dialog,):
             dlg.setStyleSheet(dlg_qss)
+        self.title_scroller.set_display_font(
+            self.config.get("display_font_family", ""),
+            self.config.get("display_font_size", 11))
         self.update()
 
     # ---------------- file / folder / skin loading ----------------
@@ -540,13 +586,24 @@ class MainWindow(QWidget):
             fallback_title = os.path.splitext(os.path.basename(p))[0]
             if read_tags:
                 tags = metadata_mod.read_tags(p, fallback_title)
-                self.playlist.add(Track(
+                track = Track(
                     title=tags.title, source="local", uri=p,
                     duration=tags.duration, artist=tags.artist, genre=tags.genre,
                     bitrate=tags.bitrate, sample_rate=tags.sample_rate,
-                ))
+                    album=getattr(tags, "album", ""),
+                )
             else:
-                self.playlist.add(Track(title=fallback_title, source="local", uri=p))
+                artist, album = metadata_mod.guess_artist_album_from_path(p)
+                track = Track(
+                    title=metadata_mod.strip_track_prefix(fallback_title),
+                    source="local", uri=p,
+                    artist=artist, album=album,
+                    duration=metadata_mod.read_duration(p),
+                )
+            if track.duration is None:
+                track.duration = metadata_mod.read_duration(p)
+            self.playlist.add(track)
+        self._infer_missing_artists()
         self._refresh_playlist_window()
 
         if self.playlist.current_index == -1:
@@ -555,20 +612,85 @@ class MainWindow(QWidget):
                 autoplay=self.config.get("autoplay_import", True)
             )
 
+    def _refresh_local_track_metadata(self, track):
+        """Repair metadata on tracks restored from an older playlist build."""
+        if (
+            track.source != "local"
+            or not os.path.isfile(track.uri)
+        ):
+            return
+        fallback_title = track.title or os.path.splitext(os.path.basename(track.uri))[0]
+        if self.config.get("read_tags", True):
+            previous_duration = track.duration
+            tags = metadata_mod.read_tags(track.uri, fallback_title)
+            track.title = tags.title
+            track.artist = tags.artist
+            track.album = tags.album
+            track.genre = tags.genre
+            track.bitrate = tags.bitrate
+            track.sample_rate = tags.sample_rate
+            track.duration = tags.duration or previous_duration
+        else:
+            track.title = metadata_mod.strip_track_prefix(fallback_title)
+            track.artist, track.album = metadata_mod.guess_artist_album_from_path(track.uri)
+        if track.duration is None:
+            track.duration = metadata_mod.read_duration(track.uri)
+
+    def _infer_missing_artists(self):
+        """Fill blank artists only when an album has one clear artist."""
+        groups = {}
+        for track in self.playlist.tracks:
+            if track.source != "local" or not track.artist:
+                continue
+            key = (
+                os.path.dirname(os.path.abspath(track.uri)),
+                (track.album or "").strip().casefold(),
+            )
+            artist = track.artist
+            base_artist = artist
+            for marker in (" feat. ", " feat ", " ft. ", " featuring "):
+                if marker in base_artist.casefold():
+                    base_artist = base_artist[:base_artist.casefold().index(marker)]
+                    break
+            groups.setdefault(key, set()).add(base_artist.strip())
+
+        for track in self.playlist.tracks:
+            if track.source != "local" or track.artist:
+                continue
+            key = (
+                os.path.dirname(os.path.abspath(track.uri)),
+                (track.album or "").strip().casefold(),
+            )
+            artists = groups.get(key, set())
+            if len(artists) == 1:
+                track.artist = next(iter(artists))
+
+    # ---------------- session playlist (what's loaded right now) ----------------
+    def _restore_session_playlist(self):
+        if not self.config.get("restore_playlist", True):
+            return
+        saved = self.config.get("session_playlist", [])
+        kept = [Track.from_dict(d) for d in saved if os.path.isfile(d.get("uri", ""))]
+        for t in kept:
+            self._refresh_local_track_metadata(t)
+            self.playlist.add(t)
+        self._infer_missing_artists()
+        if kept:
+            self._refresh_playlist_window()
+
+    def _save_session_playlist(self):
+        if self.config.get("restore_playlist", True):
+            self.config["session_playlist"] = [t.to_dict() for t in self.playlist.tracks]
+        else:
+            self.config["session_playlist"] = []
+
     def add_files_dialog(self):
         paths, _ = QFileDialog.getOpenFileNames(
             self, "Add music files", "", AUDIO_EXTENSIONS
         )
         self._add_paths(paths)
 
-    def add_folder_dialog(self):
-        folder = QFileDialog.getExistingDirectory(
-            self, "Import music folder", "",
-            QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks
-        )
-        if not folder:
-            return
-
+    def _collect_audio_files(self, folder):
         files = []
         if self.config.get("scan_subfolders", True):
             for base, _, names in os.walk(folder):
@@ -580,8 +702,17 @@ class MainWindow(QWidget):
                 p = os.path.join(folder, name)
                 if os.path.isfile(p) and os.path.splitext(name)[1].lower() in AUDIO_SUFFIXES:
                     files.append(p)
-
         files.sort(key=lambda p: p.lower())
+        return files
+
+    def add_folder_dialog(self):
+        folder = QFileDialog.getExistingDirectory(
+            self, "Import music folder", "",
+            QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks
+        )
+        if not folder:
+            return
+        files = self._collect_audio_files(folder)
         if not files:
             QMessageBox.information(
                 self, "No music found",
@@ -651,6 +782,15 @@ class MainWindow(QWidget):
     def _add_downloaded_files(self, paths):
         self._add_paths(paths)
 
+    def _remember_playlist_path(self, path):
+        if not self.config.get("remember_playlists", True):
+            return
+        path = os.path.abspath(path)
+        recents = [p for p in self.config.get("recent_playlists", []) if p != path]
+        recents.insert(0, path)
+        self.config["recent_playlists"] = recents[:8]
+        cfgmod.save(self.config)
+
     def save_playlist_dialog(self):
         if not self.playlist.tracks:
             QMessageBox.information(self, "Nothing to save", "The playlist is empty.")
@@ -661,16 +801,20 @@ class MainWindow(QWidget):
         if not path:
             return
         try:
-            playlist_io.save_playlist(path, self.playlist.tracks)
+            saved_path = playlist_io.save_playlist(path, self.playlist.tracks)
         except OSError as e:
             QMessageBox.warning(self, "Save failed", str(e))
+            return
+        self._remember_playlist_path(saved_path)
 
     def load_playlist_dialog(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Load playlist", "", PLAYLIST_FILTER
         )
-        if not path:
-            return
+        if path:
+            self._load_playlist_from_path(path)
+
+    def _load_playlist_from_path(self, path):
         try:
             tracks = playlist_io.load_playlist(path)
         except (OSError, ValueError) as e:
@@ -681,10 +825,13 @@ class MainWindow(QWidget):
             return
         start_len = len(self.playlist.tracks)
         for t in tracks:
+            self._refresh_local_track_metadata(t)
             self.playlist.add(t)
+        self._infer_missing_artists()
         self._refresh_playlist_window()
         if self.playlist.current_index == -1:
             self.load_track(start_len, autoplay=self.config.get("autoplay_import", True))
+        self._remember_playlist_path(path)
 
     def load_skin_dialog(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -712,6 +859,7 @@ class MainWindow(QWidget):
         self.playlist_window.update()
 
     def _on_plugin_track_chosen(self, source, title, uri):
+        title = str(title or "").strip() or str(uri or "Unnamed station").strip()
         self.playlist.add(Track(title=title, source=source, uri=uri))
         self._refresh_playlist_window()
         if self.playlist.current_index == -1:
@@ -727,7 +875,9 @@ class MainWindow(QWidget):
         self.playlist.current_index = index
         track = self.playlist.tracks[index]
         self.player.load(track.uri)
-        self.title_scroller.set_text(f"{track.title} — Symphony")
+        # Just the song itself — no app-name suffix cluttering the display.
+        display_title = f"{track.artist} — {track.title}" if track.artist else track.title
+        self.title_scroller.set_text(display_title)
         self._update_now_playing_label()
         self._refresh_playlist_window()
         if autoplay:
@@ -738,13 +888,23 @@ class MainWindow(QWidget):
         if not track:
             self.artist_genre_label.setText("")
             return
-        parts = []
+        details = []
         if self.config.get("show_artist_genre", True):
-            if track.artist:
-                parts.append(f"Artist: {track.artist}")
+            if track.album:
+                details.append(track.album)
             if track.genre:
-                parts.append(f"Genre: {track.genre}")
-        self.artist_genre_label.setText("   ".join(parts))
+                details.append(track.genre)
+        quality = []
+        if track.bitrate:
+            quality.append(f"{round(track.bitrate / 1000)} kbps")
+        if track.sample_rate:
+            quality.append(f"{track.sample_rate / 1000:g} kHz")
+        segments = []
+        if details:
+            segments.append(" · ".join(details))
+        if quality:
+            segments.append(" / ".join(quality))
+        self.artist_genre_label.setText("   ⋮   ".join(segments))
 
     def toggle_play_pause(self):
         if self.player.is_playing():
@@ -826,6 +986,12 @@ class MainWindow(QWidget):
         self.time_current_label.setText(fmt_time(current))
         if duration > 0:
             self.time_total_label.setText(fmt_time(duration))
+            track = self.playlist.current()
+            if track and (
+                track.duration is None or abs(track.duration - duration) > 0.5
+            ):
+                track.duration = duration
+                self._refresh_playlist_window()
         if not self._seek_dragging and duration > 0:
             self.seek_slider.blockSignals(True)
             self.seek_slider.setValue(int((current / duration) * 1000))
@@ -866,6 +1032,31 @@ class MainWindow(QWidget):
     def _seek_hold_tick(self, direction):
         self._seek_hold_amount = min(10, self._seek_hold_amount + 1)
         self.player.seek_relative(direction * self._seek_hold_amount)
+
+    def _on_skip_pressed(self, direction):
+        self._skip_seeked = False
+        self._skip_long_press_timer = QTimer(self)
+        self._skip_long_press_timer.setSingleShot(True)
+        self._skip_long_press_timer.setInterval(SKIP_LONG_PRESS_MS)
+        self._skip_long_press_timer.timeout.connect(
+            lambda: self._begin_skip_seek(direction))
+        self._skip_long_press_timer.start()
+
+    def _begin_skip_seek(self, direction):
+        self._skip_seeked = True
+        self._start_seek_hold(direction)
+
+    def _on_skip_released(self, direction):
+        if self._skip_long_press_timer is not None:
+            self._skip_long_press_timer.stop()
+            self._skip_long_press_timer = None
+        if self._skip_seeked:
+            self._stop_seek_hold()
+            self._skip_seeked = False
+        elif direction > 0:
+            self.next_track()
+        else:
+            self.prev_track()
 
     def _stop_seek_hold(self):
         if self._seek_hold_timer is not None:
@@ -937,6 +1128,12 @@ class MainWindow(QWidget):
         sizes = self.splitter.sizes()
         if sizes:
             self.config["now_playing_height"] = sizes[0]
+        # Remember the window size (not maximized/fullscreen state) so a
+        # manual resize actually sticks across relaunches.
+        if not self.isMaximized() and not self.isFullScreen():
+            self.config["window_width"] = self.width()
+            self.config["window_height"] = self.height()
+        self._save_session_playlist()
         cfgmod.save(self.config)
         self.eq_window.close()
         self.playlist_window.close()

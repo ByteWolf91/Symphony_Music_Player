@@ -56,7 +56,13 @@ class ShortcutsDialog(QDialog):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        # The scroll area's viewport otherwise paints the system's default
+        # (often white) base color, making the light text unreadable.
+        scroll.setStyleSheet(
+            "QScrollArea, QScrollArea > QWidget, QScrollArea > QWidget > QWidget "
+            "{ background: #14161e; border: none; }")
         inner = QWidget()
+        inner.setStyleSheet("background: #14161e;")
         rows = QVBoxLayout(inner)
         rows.setSpacing(8)
         rows.setContentsMargins(0, 0, 0, 0)
