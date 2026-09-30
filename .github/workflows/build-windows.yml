@@ -1,52 +1,70 @@
 name: Build Symphony EXE
 
 on:
-  workflow_dispatch:
+workflow_dispatch:
 
 jobs:
-  build:
-    runs-on: windows-latest
+build:
+runs-on: windows-latest
 
-    steps:
-      - name: Checkout Symphony
-        uses: actions/checkout@v4
+```
+steps:
+  - name: Checkout Symphony
+    uses: actions/checkout@v5
 
-      - name: Install Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+  - name: Install Python
+    uses: actions/setup-python@v6
+    with:
+      python-version: "3.12"
 
-      - name: Install PyInstaller
-        run: python -m pip install pyinstaller
+  - name: Install dependencies
+    shell: powershell
+    run: |
+      python -m pip install --upgrade pip
+      python -m pip install pyinstaller
 
-      - name: Install dependencies
-        shell: powershell
-        run: |
-          if (Test-Path "requirements.txt") {
-            python -m pip install -r requirements.txt
-          }
+      if (Test-Path "requirements.txt") {
+        python -m pip install -r requirements.txt
+      }
 
-          if (Test-Path "files\requirements.txt") {
-            python -m pip install -r files\requirements.txt
-          }
+      if (Test-Path "files\requirements.txt") {
+        python -m pip install -r files\requirements.txt
+      }
 
-      - name: Find Python files
-        shell: powershell
-        run: |
-          Get-ChildItem -Path . -Filter *.py -Recurse
+  - name: Check project files
+    shell: powershell
+    run: |
+      Write-Host "Repository files:"
+      Get-ChildItem -Path . -Recurse -File |
+        Select-Object -ExpandProperty FullName
 
-      - name: Build Symphony
-        shell: powershell
-        run: |
-          cd files
-          if (-not (Test-Path "main.py")) {
-            Write-Error "main.py not found in files directory. Update this to your actual entry script name."
-            exit 1
-          }
-          pyinstaller --noconfirm --clean --onefile --windowed --name Symphony main.py
+      if (-not (Test-Path "files\main.py")) {
+        Write-Error "files\main.py was not found."
+        exit 1
+      }
 
-      - name: Upload Symphony EXE
-        uses: actions/upload-artifact@v4
-        with:
-          name: Symphony-Windows
-          path: files\dist\Symphony.exe
+  - name: Build Symphony
+    shell: powershell
+    run: |
+      Set-Location files
+
+      python -m PyInstaller `
+        --noconfirm `
+        --clean `
+        --onefile `
+        --windowed `
+        --name Symphony `
+        main.py
+
+      if (-not (Test-Path "dist\Symphony.exe")) {
+        Write-Error "Symphony.exe was not created."
+        exit 1
+      }
+
+  - name: Upload Symphony EXE
+    uses: actions/upload-artifact@v5
+    with:
+      name: Symphony-Windows
+      path: files/dist/Symphony.exe
+      if-no-files-found: error
+```
