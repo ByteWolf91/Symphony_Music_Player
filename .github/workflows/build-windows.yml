@@ -1,6 +1,6 @@
 name: Build Symphony EXE
 
-'on':
+on:
 workflow_dispatch:
 
 jobs:
@@ -15,31 +15,33 @@ steps:
   - name: Install Python
     uses: actions/setup-python@v6
     with:
-      python-version: '3.12'
+      python-version: "3.12"
 
   - name: Install dependencies
     shell: pwsh
     run: |
       python -m pip install --upgrade pip
+      python -m pip install -r files/requirements.txt
       python -m pip install pyinstaller
-
-      if (Test-Path "requirements.txt") {
-        python -m pip install -r requirements.txt
-      }
-
-      if (Test-Path "files/requirements.txt") {
-        python -m pip install -r files/requirements.txt
-      }
 
   - name: Build Symphony
     shell: pwsh
     run: |
-      if (-not (Test-Path "files/main.py")) {
-        throw "files/main.py was not found"
-      }
-
       Set-Location files
-      python -m PyInstaller --noconfirm --clean --onefile --windowed --name Symphony main.py
+
+      python -m PyInstaller `
+        --noconfirm `
+        --clean `
+        --onefile `
+        --windowed `
+        --name Symphony `
+        --collect-all vlc `
+        --add-data "symphony/skins;symphony/skins" `
+        main.py
+
+      if ($LASTEXITCODE -ne 0) {
+        throw "PyInstaller build failed"
+      }
 
       if (-not (Test-Path "dist/Symphony.exe")) {
         throw "Symphony.exe was not created"
