@@ -39,7 +39,11 @@ jobs:
         shell: powershell
         run: |
           cd files
-          pyinstaller --noconfirm --clean --onefile --windowed --name Symphony *.py
+          if (-not (Test-Path "main.py")) {
+            Write-Error "main.py not found in files directory. Update this to your actual entry script name."
+            exit 1
+          }
+          pyinstaller --noconfirm --clean --onefile --windowed --name Symphony main.py
 
       - name: Upload Symphony EXE
         uses: actions/upload-artifact@v4
