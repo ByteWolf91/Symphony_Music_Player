@@ -1,29 +1,35 @@
+
 name: Build Symphony EXE
 
 on: [workflow_dispatch]
 
 jobs:
-build:
-runs-on: windows-latest
-steps:
-- name: Checkout
-uses: actions/checkout@v5
+  build:
+    runs-on: windows-latest
 
-  - name: Set up Python
-    uses: actions/setup-python@v6
-    with:
-      python-version: "3.12"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
 
-  - name: Install dependencies
-    run: python -m pip install -r files/requirements.txt pyinstaller
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
 
-  - name: Build EXE
-    working-directory: files
-    run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name Symphony --collect-all vlc --add-data "symphony/skins;symphony/skins" main.py
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r files/requirements.txt
+          python -m pip install pyinstaller
 
-  - name: Upload EXE
-    uses: actions/upload-artifact@v5
-    with:
-      name: Symphony-Windows
-      path: files/dist/Symphony.exe
-      if-no-files-found: error
+      - name: Build Symphony
+        working-directory: files
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name Symphony --collect-all vlc --add-data "symphony/skins;symphony/skins" main.py
+
+      - name: Upload Symphony EXE
+        uses: actions/upload-artifact@v5
+        with:
+          name: Symphony-Windows
+          path: files/dist/Symphony.exe
+          if-no-files-found: error
